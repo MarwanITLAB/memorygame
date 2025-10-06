@@ -1,0 +1,134 @@
+```html
+<!doctype html>
+<html lang="de" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Memory – Lobby</title>
+    <link rel="stylesheet" href="/app.css"/>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="logo">
+            <div class="dot"></div>
+            <div>Memory <span style="opacity:.75">LIVE</span></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <!-- Host-Spalte -->
+        <div class="section">
+            <h1>Starte ein neues Spiel</h1>
+            <p class="sub">Erzeuge eine PIN und zeige den Bildschirm für alle.</p>
+            <button id="hostBtn">Host starten</button>
+            <div class="helper">Der Host teilt die PIN mit der Gruppe.</div>
+            <div id="pinWrap" style="display:none;margin-top:14px">
+                <div class="helper">PIN für alle:</div>
+                <div id="pinDisplay" class="pin">— — — —</div>
+            </div>
+        </div>
+
+        <!-- Join-Spalte -->
+        <div class="section">
+            <h2>Beitreten</h2>
+            <input id="pinInput" placeholder="Game PIN" inputmode="numeric" maxlength="6" autocomplete="one-time-code"/>
+            <div class="row">
+                <input id="nameInput" placeholder="Dein Name" autocomplete="name"/>
+                <button id="joinBtn" class="secondary">Beitreten</button>
+            </div>
+            <div class="helper">Gib die PIN und deinen Namen ein, dann beitreten.</div>
+        </div>
+    </div>
+
+    <div class="footer">Design im Kahoot-Stil: klare Farben, große Buttons, fokussierte UI.</div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+    // DOM
+    const hostBtn    = document.getElementById('hostBtn');
+    const joinBtn    = document.getElementById('joinBtn');
+    const pinInput   = document.getElementById('pinInput');
+    const nameInput  = document.getElementById('nameInput');
+    const pinWrap    = document.getElementById('pinWrap');
+    const pinDisplay = document.getElementById('pinDisplay');
+    const toastEl    = document.getElementById('toast');
+
+    // Helper: Toast
+    function toast(msg) {
+        toastEl.textContent = msg;
+        toastEl.style.display = 'block';
+        setTimeout(() => toastEl.style.display = 'none', 2000);
+    }
+
+    // Host erstellt Raum -> Redirect auf /host/{PIN}
+    async function createRoom() {
+        hostBtn.disabled = true;
+        try {
+            const res = await fetch('/api/rooms', { method: 'POST' });
+            if (!res.ok) throw new Error('Backend-Fehler (' + res.status + ')');
+            const data = await res.json();
+            // UI-Feedback + Weiterleiten
+            pinInput.value = data.pin;
+            pinDisplay.textContent = data.pin;
+            pinWrap.style.display = 'block';
+            toast('Raum erstellt! PIN: ' + data.pin);
+            // kurze Verzögerung für visuelles Feedback
+            setTimeout(() => { window.location.href = '/host/' + data.pin; }, 500);
+        } catch (e) {
+            console.warn(e);
+            toast(e.message || 'Fehler beim Erstellen');
+        } finally {
+            hostBtn.disabled = false;
+        }
+    }
+
+    // Spieler tritt bei -> Redirect auf /player/{PIN}
+    async function joinRoom() {
+        const pin  = (pinInput.value || '').trim();
+        const name = (nameInput.value || '').trim();
+        if (!pin || !name) {
+            toast('Bitte PIN und Name eingeben');
+            return;
+        }
+        joinBtn.disabled = true;
+        try {
+            const res = await fetch('/api/rooms/' + encodeURIComponent(pin) + '/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.error || ('Beitritt fehlgeschlagen (' + res.status + ')'));
+            }
+            // lokale Info merken (nützlich für Player-Ansicht)
+            localStorage.setItem('mg_name', name);
+            localStorage.setItem('mg_playerId', data.playerId);
+            toast('Beigetreten als ' + name);
+            setTimeout(() => { window.location.href = '/player/' + pin; }, 300);
+        } catch (e) {
+            console.warn(e);
+            toast(e.message || 'Beitritt fehlgeschlagen');
+        } finally {
+            joinBtn.disabled = false;
+        }
+    }
+
+    // Events
+    hostBtn.addEventListener('click', createRoom);
+    joinBtn.addEventListener('click', joinRoom);
+
+    // UX: Enter auf Name-Input löst Join aus
+    nameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') joinRoom();
+    });
+    pinInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') nameInput.focus();
+    });
+</script>
+</body>
+</html>
+```

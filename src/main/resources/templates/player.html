@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Player – Lobby</title>
+  <link rel="stylesheet" href="/app.css"/>
+
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2/dist/stomp.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="logo"><div class="dot"></div><div>Memory <span style="opacity:.7">PLAYER</span></div></div>
+  </div>
+
+  <div class="card">
+    <div class="section">
+      <h1>Warten in Lobby</h1>
+      <p class="sub">PIN <b id="pin">----</b> · Du: <b id="me">?</b></p>
+      <div class="helper" id="status">Wartet auf Start…</div>
+      <div id="timer" style="font-size:24px; font-weight:800; margin-top:6px"></div>
+    </div>
+
+    <div class="section">
+      <h2>Mitspieler</h2>
+      <ul id="players" style="list-style:none; padding-left:0; margin:6px 0 0 0"></ul>
+    </div>
+
+    <div class="section" id="boardSection" style="display:none">
+      <h2>Spielfeld</h2>
+      <div id="board" class="board"></div>
+      <div class="helper">Du kannst nur klicken, wenn du dran bist.</div>
+    </div>
+
+    <div class="section" id="scoreSection" style="display:none">
+      <h2>Ergebnis</h2>
+      <ul id="scoreList" class="scorelist" style="list-style:none; padding-left:0; margin:6px 0 0 0"></ul>
+      <div class="helper">Warte, bis der Host eine neue Runde startet…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const pin = location.pathname.split('/').pop();
+  const pinEl = document.getElementById('pin');
+  const meEl = document.getElementById('me');
+  const statusEl = document.getElementById('status');
+  const timerEl = document.getElementById('timer');
+  const playersEl = document.getElementById('players');
+  const boardSection = document.getElementById('boardSection');
+  const boardEl = document.getElementById('board');
+  const scoreSection = document.getElementById('scoreSection');
+  const scoreList = document.getElementById('scoreList');
+
+  pinEl.textContent = pin;
+
+  let meName = localStorage.getItem('mg_name') || '';
+  if (!meName) { meName = prompt('Dein Name?') || 'Ich'; localStorage.setItem('mg_name', meName); }
+  meEl.textContent = meName;
+
+  const myId = localStorage.getItem('mg_playerId') || null;
+
+  async function fetchOnce() {
+    try {
+      const res = await fetch('/api/rooms/' + encodeURIComponent(pin));
+      if (!res.ok) return;
+      const data = await res.json();
+      renderState({
+        type: 'ROOM_STATE',
+        pin: data.pin,
+        state: (data.state && data.state.name) ? data.state.name : (''+data.state),
+        currentPlayerId: data.currentPlayerId || null,
+        timeLeft: data.timeLeft ?? 0,
+        players: data.players || [],
+        boardSize: data.boardSize || 4,
+        board: data.board || null
+      });
+    } catch (_) {}
+  }
+
+  let stomp;
+  function connectWs(){
+    const sock=new SockJS('/ws');
+    stomp=Stomp.over(sock); stomp.debug=null;
+    stomp.connect({}, ()=>{
+      stomp.subscribe('/topic/room.'+pin, msg=>{
+        try{ const s=JSON.parse(msg.body); if(s.type==='ROOM_STATE') renderState(s); }catch(e){}
+      });
+    }, ()=> setTimeout(connectWs, 1500));
+  }
+
+  function renderState(s){
+    // Spieler
+    playersEl.innerHTML='';
+    (s.players||[]).forEach(p=>{
+      const li=document.createElement('li');
+      const isTurn=p.id===s.currentPlayerId;
+      const isMe=myId && p.id===myId;
+      li.textContent=(isTurn?'▶ ':'')+p.name+(isMe?' (du)':'');
+      playersEl.appendChild(li);
+    });
+
+    // Status/Timer
+    if(s.state==='RUNNING'){
+      const curName=(s.players||[]).find(p=>p.id===s.currentPlayerId)?.name||'—';
+      statusEl.textContent='Am Zug: '+curName+(myId&&s.currentPlayerId===myId?' — DU!':'');
+      timerEl.textContent='⏳ '+(s.timeLeft??0)+' s';
+      renderBoard(s);
+      scoreSection.style.display='none';
+    } else if (s.state==='FINISHED'){
+      statusEl.textContent='Spiel beendet';
+      timerEl.textContent='';
+      boardSection.style.display='block'; // optional sichtbar
+      renderScores(s.players||[]);
+      scoreSection.style.display='block';
+    } else {
+      statusEl.textContent='Wartet auf Start…';
+      timerEl.textContent='';
+      boardSection.style.display='none';
+      scoreSection.style.display='none';
+    }
+  }
+
+  function renderBoard(s){
+    boardSection.style.display='block';
+    const size=s.boardSize||4;
+    boardEl.style.gridTemplateColumns=`repeat(${size},1fr)`;
+    boardEl.innerHTML='';
+
+    const myTurn=myId && s.currentPlayerId===myId;
+    (s.board||[]).forEach(card=>{
+      const div=document.createElement('div');
+      div.className='tile '+(card.state==='MATCHED'?'matched':card.state==='REVEALED'?'revealed':'hidden');
+      div.textContent=(card.state==='HIDDEN')?'■':(card.symbol||'⭐');
+      if(myTurn && card.state==='HIDDEN'){
+        div.style.cursor='pointer';
+        div.onclick=()=>tryReveal(card.pos);
+      }else{
+        div.style.cursor='default';
+        div.onclick=null;
+      }
+      boardEl.appendChild(div);
+    });
+  }
+
+  function renderScores(players){
+    scoreList.innerHTML='';
+    const sorted=[...players].sort((a,b)=>b.score-a.score);
+    const top = sorted.length? sorted[0].score : 0;
+    sorted.forEach(p=>{
+      const li=document.createElement('li');
+      const isWinner = p.score===top && top>0;
+      li.className = isWinner ? 'winner' : '';
+      li.textContent = (isWinner?'🏆 ':'') + p.name + ' — ' + p.score + ' Punkte';
+      scoreList.appendChild(li);
+    });
+  }
+
+  async function tryReveal(pos){
+    try{
+      const res = await fetch('/api/rooms/'+pin+'/reveal', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ playerId: localStorage.getItem('mg_playerId'), pos })
+      });
+      if(!res.ok){ /* leise */ }
+    }catch(e){}
+  }
+
+  fetchOnce();
+  connectWs();
+</script>
+</body>
+</html>
