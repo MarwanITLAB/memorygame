@@ -3,65 +3,89 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Player – Lobby</title>
+  <title>Host – Memory</title>
   <link rel="stylesheet" href="/app.css"/>
 
+  <!-- WebSocket Clients -->
   <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/stompjs@2/dist/stomp.min.js"></script>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <div class="logo"><div class="dot"></div><div>Memory <span style="opacity:.7">PLAYER</span></div></div>
+    <div class="logo">
+      <div class="dot"></div>
+      <div>Memory <span style="opacity:.7">HOST</span></div>
+    </div>
   </div>
 
   <div class="card">
+    <!-- Linke Spalte: PIN & Status -->
     <div class="section">
-      <h1>Warten in Lobby</h1>
-      <p class="sub">PIN <b id="pin">----</b> · Du: <b id="me">?</b></p>
-      <div class="helper" id="status">Wartet auf Start…</div>
-      <div id="timer" style="font-size:24px; font-weight:800; margin-top:6px"></div>
+      <h1>PIN anzeigen</h1>
+      <div class="pin" id="pin">----</div>
+      <div class="row" style="margin-top:10px">
+        <button id="copyBtn" class="secondary" title="PIN kopieren">PIN kopieren</button>
+      </div>
+      <div class="helper" style="margin-top:10px">Teile diese PIN mit allen Spielern.</div>
+
+      <div class="helper" id="status" style="margin-top:14px">Wartet auf Start…</div>
+      <div id="timer" style="font-size:28px; font-weight:800; margin-top:6px"></div>
     </div>
 
+    <!-- Rechte Spalte: Spielerliste & Start -->
     <div class="section">
-      <h2>Mitspieler</h2>
+      <h2>Spieler in der Lobby</h2>
       <ul id="players" style="list-style:none; padding-left:0; margin:6px 0 0 0"></ul>
+      <div class="helper" id="count" style="margin-top:8px">0 Spieler in der Lobby</div>
+
+      <button id="startBtn" disabled style="margin-top:14px">Spiel starten</button>
+      <div class="helper" style="margin-top:8px">Ab 2 Spielern aktiv.</div>
     </div>
 
+    <!-- Spielfeld (erscheint nach Start) -->
     <div class="section" id="boardSection" style="display:none">
       <h2>Spielfeld</h2>
       <div id="board" class="board"></div>
-      <div class="helper">Du kannst nur klicken, wenn du dran bist.</div>
-    </div>
-
-    <div class="section" id="scoreSection" style="display:none">
-      <h2>Ergebnis</h2>
-      <ul id="scoreList" class="scorelist" style="list-style:none; padding-left:0; margin:6px 0 0 0"></ul>
-      <div class="helper">Warte, bis der Host eine neue Runde startet…</div>
+      <div class="helper">Alle Karten sind zunächst verdeckt.</div>
     </div>
   </div>
+
+  <div class="footer">Design im Kahoot-Stil. Host steuert das Spiel, alle sehen diesen Bildschirm.</div>
 </div>
 
+<div id="toast" class="toast"></div>
+
 <script>
+  // --- DOM & Basics ---
   const pin = location.pathname.split('/').pop();
-  const pinEl = document.getElementById('pin');
-  const meEl = document.getElementById('me');
-  const statusEl = document.getElementById('status');
-  const timerEl = document.getElementById('timer');
+  const pinEl     = document.getElementById('pin');
+  const statusEl  = document.getElementById('status');
+  const timerEl   = document.getElementById('timer');
   const playersEl = document.getElementById('players');
+  const countEl   = document.getElementById('count');
+  const startBtn  = document.getElementById('startBtn');
+  const copyBtn   = document.getElementById('copyBtn');
+  const toastEl   = document.getElementById('toast');
   const boardSection = document.getElementById('boardSection');
-  const boardEl = document.getElementById('board');
-  const scoreSection = document.getElementById('scoreSection');
-  const scoreList = document.getElementById('scoreList');
+  const boardEl   = document.getElementById('board');
 
   pinEl.textContent = pin;
 
-  let meName = localStorage.getItem('mg_name') || '';
-  if (!meName) { meName = prompt('Dein Name?') || 'Ich'; localStorage.setItem('mg_name', meName); }
-  meEl.textContent = meName;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.style.display = 'block';
+    setTimeout(()=> toastEl.style.display = 'none', 2000);
+  }
 
-  const myId = localStorage.getItem('mg_playerId') || null;
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(pin);
+      toast('PIN kopiert');
+    } catch { toast('Kopieren nicht möglich'); }
+  });
 
+  // --- Initial REST fetch (damit sofort Inhalt sichtbar ist) ---
   async function fetchOnce() {
     try {
       const res = await fetch('/api/rooms/' + encodeURIComponent(pin));
@@ -80,94 +104,111 @@
     } catch (_) {}
   }
 
+  // --- WebSocket / STOMP mit Heartbeats & Reconnect ---
   let stomp;
-  function connectWs(){
-    const sock=new SockJS('/ws');
-    stomp=Stomp.over(sock); stomp.debug=null;
-    stomp.connect({}, ()=>{
-      stomp.subscribe('/topic/room.'+pin, msg=>{
-        try{ const s=JSON.parse(msg.body); if(s.type==='ROOM_STATE') renderState(s); }catch(e){}
+  let wsRetryMs = 1000;
+
+  function connectWs() {
+    const sock = new SockJS('/ws');
+    stomp = Stomp.over(sock);
+    stomp.debug = null;                 // leise
+
+    // Heartbeats (ms)
+    stomp.heartbeat.outgoing = 10000;   // wir senden alle 10s
+    stomp.heartbeat.incoming = 10000;   // wir erwarten alle 10s
+
+    sock.onclose = () => {
+      setTimeout(connectWs, wsRetryMs);               // Reconnect mit Backoff
+      wsRetryMs = Math.min(wsRetryMs * 2, 10000);
+    };
+
+    stomp.connect({}, () => {
+      wsRetryMs = 1000; // reset Backoff
+      stomp.subscribe('/topic/room.' + pin, msg => {
+        try {
+          const data = JSON.parse(msg.body);
+          if (data.type === 'ROOM_STATE') renderState(data);
+        } catch (e) { console.warn('WS parse error', e); }
       });
-    }, ()=> setTimeout(connectWs, 1500));
+    }, () => {
+      setTimeout(connectWs, wsRetryMs);
+      wsRetryMs = Math.min(wsRetryMs * 2, 10000);
+    });
   }
 
-  function renderState(s){
-    // Spieler
-    playersEl.innerHTML='';
-    (s.players||[]).forEach(p=>{
-      const li=document.createElement('li');
-      const isTurn=p.id===s.currentPlayerId;
-      const isMe=myId && p.id===myId;
-      li.textContent=(isTurn?'▶ ':'')+p.name+(isMe?' (du)':'');
+  window.addEventListener('online',  () => connectWs());
+  window.addEventListener('offline', () => { try { stomp && stomp.disconnect(()=>{}); } catch(_) {} });
+
+  // --- Render-Logik ---
+  function renderState(s) {
+    // Spieler-Liste
+    playersEl.innerHTML = '';
+    (s.players || []).forEach(p => {
+      const li = document.createElement('li');
+      const isTurn = p.id === s.currentPlayerId;
+      li.textContent = (isTurn ? '▶ ' : '') + p.name + ' — ' + p.score + ' Punkte';
       playersEl.appendChild(li);
     });
+    const count = s.players ? s.players.length : 0;
+    countEl.textContent = count + (count === 1 ? ' Spieler in der Lobby' : ' Spieler in der Lobby');
 
-    // Status/Timer
-    if(s.state==='RUNNING'){
-      const curName=(s.players||[]).find(p=>p.id===s.currentPlayerId)?.name||'—';
-      statusEl.textContent='Am Zug: '+curName+(myId&&s.currentPlayerId===myId?' — DU!':'');
-      timerEl.textContent='⏳ '+(s.timeLeft??0)+' s';
-      renderBoard(s);
-      scoreSection.style.display='none';
-    } else if (s.state==='FINISHED'){
-      statusEl.textContent='Spiel beendet';
-      timerEl.textContent='';
-      boardSection.style.display='block'; // optional sichtbar
-      renderScores(s.players||[]);
-      scoreSection.style.display='block';
+    // Start-Button nur in LOBBY und ab 2 Spielern
+    startBtn.disabled = !(s.state === 'LOBBY' && count >= 2);
+
+    // Status & Timer
+    if (s.state === 'RUNNING') {
+      const curName = (s.players || []).find(p => p.id === s.currentPlayerId)?.name || '—';
+      statusEl.textContent = 'Am Zug: ' + curName;
+      timerEl.textContent  = '⏳ ' + (s.timeLeft ?? 0) + ' s';
+    } else if (s.state === 'FINISHED') {
+      statusEl.textContent = 'Spiel beendet';
+      timerEl.textContent  = '';
     } else {
-      statusEl.textContent='Wartet auf Start…';
-      timerEl.textContent='';
-      boardSection.style.display='none';
-      scoreSection.style.display='none';
+      statusEl.textContent = 'Wartet auf Start…';
+      timerEl.textContent  = '';
+    }
+
+    // Board rendern (nur wenn RUNNING und Board vorhanden)
+    if (s.state === 'RUNNING' && Array.isArray(s.board)) {
+      boardSection.style.display = 'block';
+      const size = s.boardSize || 4;
+      boardEl.style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+      boardEl.innerHTML = '';
+      s.board.forEach(card => {
+        const div = document.createElement('div');
+        div.className = 'tile ' + (
+                card.state === 'MATCHED' ? 'matched' :
+                        card.state === 'REVEALED' ? 'revealed' : 'hidden'
+        );
+        // Emoji groß anzeigen, verdeckt = Platzhalter
+        div.textContent = (card.state === 'HIDDEN') ? '■' : (card.symbol || '⭐');
+        boardEl.appendChild(div);
+      });
+    } else {
+      boardSection.style.display = 'none';
     }
   }
 
-  function renderBoard(s){
-    boardSection.style.display='block';
-    const size=s.boardSize||4;
-    boardEl.style.gridTemplateColumns=`repeat(${size},1fr)`;
-    boardEl.innerHTML='';
-
-    const myTurn=myId && s.currentPlayerId===myId;
-    (s.board||[]).forEach(card=>{
-      const div=document.createElement('div');
-      div.className='tile '+(card.state==='MATCHED'?'matched':card.state==='REVEALED'?'revealed':'hidden');
-      div.textContent=(card.state==='HIDDEN')?'■':(card.symbol||'⭐');
-      if(myTurn && card.state==='HIDDEN'){
-        div.style.cursor='pointer';
-        div.onclick=()=>tryReveal(card.pos);
-      }else{
-        div.style.cursor='default';
-        div.onclick=null;
+  // --- Start-Button → Spiel starten ---
+  startBtn.addEventListener('click', async () => {
+    startBtn.disabled = true;
+    try {
+      const res = await fetch('/api/rooms/' + encodeURIComponent(pin) + '/start', { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(()=> ({}));
+        toast(data.error || 'Start fehlgeschlagen');
+        startBtn.disabled = false;
+      } else {
+        toast('Spiel gestartet');
       }
-      boardEl.appendChild(div);
-    });
-  }
+    } catch (e) {
+      console.warn(e);
+      toast('Start fehlgeschlagen');
+      startBtn.disabled = false;
+    }
+  });
 
-  function renderScores(players){
-    scoreList.innerHTML='';
-    const sorted=[...players].sort((a,b)=>b.score-a.score);
-    const top = sorted.length? sorted[0].score : 0;
-    sorted.forEach(p=>{
-      const li=document.createElement('li');
-      const isWinner = p.score===top && top>0;
-      li.className = isWinner ? 'winner' : '';
-      li.textContent = (isWinner?'🏆 ':'') + p.name + ' — ' + p.score + ' Punkte';
-      scoreList.appendChild(li);
-    });
-  }
-
-  async function tryReveal(pos){
-    try{
-      const res = await fetch('/api/rooms/'+pin+'/reveal', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ playerId: localStorage.getItem('mg_playerId'), pos })
-      });
-      if(!res.ok){ /* leise */ }
-    }catch(e){}
-  }
-
+  // Kickoff
   fetchOnce();
   connectWs();
 </script>
