@@ -1,10 +1,9 @@
-package com.example.memorygame.config;
+package com.example.memorygame.ws;
 
-import org.springframework.context.annotation.Bean;
+
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.scheduling.TaskScheduler;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
@@ -13,13 +12,11 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 @EnableWebSocketMessageBroker
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
-    @Bean
-    public TaskScheduler messageBrokerTaskScheduler() {
-        ThreadPoolTaskScheduler ts = new ThreadPoolTaskScheduler();
-        ts.setPoolSize(1);
-        ts.setThreadNamePrefix("wss-heartbeat-");
-        ts.initialize();
-        return ts;
+    // Nutze den bereits vorhandenen Bean aus Spring:
+    private final TaskScheduler messageBrokerTaskScheduler;
+
+    public WebSocketConfig(TaskScheduler messageBrokerTaskScheduler) {
+        this.messageBrokerTaskScheduler = messageBrokerTaskScheduler;
     }
 
     @Override
@@ -30,8 +27,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
         registry.enableSimpleBroker("/topic")
-                .setTaskScheduler(messageBrokerTaskScheduler())
-                .setHeartbeatValue(new long[]{10000, 10000}); // 10s senden/erwarten
+                .setTaskScheduler(messageBrokerTaskScheduler)     // Heartbeats ermöglichen
+                .setHeartbeatValue(new long[]{10000, 10000});     // 10s senden/erwarten
         registry.setApplicationDestinationPrefixes("/app");
     }
 }
