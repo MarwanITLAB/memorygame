@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Host – Lobby</title>
+    <link rel="stylesheet" href="/app.css"/>
+
+    <!-- WebSocket Clients -->
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2/dist/stomp.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="logo"><div class="dot"></div><div>Memory <span style="opacity:.7">HOST</span></div></div>
+    </div>
+
+    <div class="card">
+        <!-- Linke Spalte: PIN & Status -->
+        <div class="section">
+            <h1>PIN anzeigen</h1>
+            <div class="pin" id="pin">----</div>
+            <div class="row" style="margin-top:10px">
+                <button id="copyBtn" class="secondary" title="PIN kopieren">PIN kopieren</button>
+            </div>
+            <div class="helper" style="margin-top:10px">Teile diese PIN mit allen Spielern.</div>
+
+            <div class="helper" id="status" style="margin-top:14px">Wartet auf Start…</div>
+            <div id="timer" style="font-size:28px; font-weight:800; margin-top:6px"></div>
+        </div>
+
+        <!-- Rechte Spalte: Spielerliste & Start -->
+        <div class="section">
+            <h2>Spieler in der Lobby</h2>
+            <ul id="players" style="list-style:none; padding-left:0; margin:6px 0 0 0"></ul>
+            <div class="helper" id="count" style="margin-top:8px">0 Spieler in der Lobby</div>
+
+            <button id="startBtn" disabled style="margin-top:14px">Spiel starten</button>
+            <div class="helper" style="margin-top:8px">Ab 2 Spielern aktiv.</div>
+        </div>
+
+        <!-- Spielfeld -->
+        <div class="section" id="boardSection" style="display:none">
+            <h2>Spielfeld</h2>
+            <div id="board" class="board"></div>
+            <div class="helper">Große Emojis – viel Spaß! 😊</div>
+        </div>
+
+        <!-- Scoreboard -->
+        <div class="section" id="scoreSection" style="display:none">
+            <h2>Ergebnis</h2>
+            <ul id="scoreList" class="scorelist" style="list-style:none; padding-left:0; margin:6px 0 0 0"></ul>
+            <div class="row" style="margin-top:12px">
+                <button id="restartKeepBtn">Neue Runde (Scores behalten)</button>
+                <button id="restartResetBtn" class="secondary">Neue Runde (Scores zurücksetzen)</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">Design im Kahoot-Stil. Host steuert das Spiel, alle sehen diesen Bildschirm.</div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+    // DOM
+    const pin = location.pathname.split('/').pop();
+    const pinEl = document.getElementById('pin');
+    const statusEl = document.getElementById('status');
+    const timerEl = document.getElementById('timer');
+    const playersEl = document.getElementById('players');
+    const countEl = document.getElementById('count');
+    const startBtn = document.getElementById('startBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const toastEl = document.getElementById('toast');
+    const boardSection = document.getElementById('boardSection');
+    const boardEl = document.getElementById('board');
+    const scoreSection = document.getElementById('scoreSection');
+    const scoreList = document.getElementById('scoreList');
+    const restartKeepBtn = document.getElementById('restartKeepBtn');
+    const restartResetBtn = document.getElementById('restartResetBtn');
+
+    pinEl.textContent = pin;
+
+    function toast(msg){ toastEl.textContent = msg; toastEl.style.display='block'; setTimeout(()=>toastEl.style.display='none',2000); }
+    copyBtn.addEventListener('click', async ()=>{ try{ await navigator.clipboard.writeText(pin); toast('PIN kopiert'); }catch{ toast('Kopieren nicht möglich'); } });
+
+    // Initial fetch
+    async function fetchOnce() {
+        try {
+            const res = await fetch('/api/rooms/' + pin);
+            if (!res.ok) return;
+            const data = await res.json();
+            renderState({
+                type: 'ROOM_STATE',
+                pin: data.pin,
+                state: (data.state && data.state.name) ? data.state.name : (''+data.state),
+                currentPlayerId: data.currentPlayerId || null,
+                timeLeft: data.timeLeft ?? 0,
+                players: data.players || [],
+                boardSize: data.boardSize || 4,
+                board: data.board || null
+            });
+        } catch(_) {}
+    }
+
+    // WS
+    let stomp;
+    function connectWs(){
+        const sock = new SockJS('/ws');
+        stomp = Stomp.over(sock); stomp.debug=null;
+        stomp.connect({}, ()=>{
+            stomp.subscribe('/topic/room.'+pin, msg=>{
+                try { const s = JSON.parse(msg.body); if(s.type==='ROOM_STATE') renderState(s); } catch(e){}
+            });
+        }, ()=> setTimeout(connectWs, 1500));
+    }
+
+    function renderState(s){
+        // Spieler
+        playersEl.innerHTML = '';
+        (s.players||[]).forEach(p=>{
+            const li=document.createElement('li');
+            const isTurn=p.id===s.currentPlayerId;
+            li.textContent=(isTurn?'▶ ':'')+p.name+' — '+p.score+' Punkte';
+            playersEl.appendChild(li);
+        });
+        const count = s.players ? s.players.length : 0;
+        countEl.textContent = count + (count===1?' Spieler in der Lobby':' Spieler in der Lobby');
+
+        // Status/Timer
+        if(s.state==='RUNNING'){
+            const curName=(s.players||[]).find(p=>p.id===s.currentPlayerId)?.name||'—';
+            statusEl.textContent='Am Zug: '+curName;
+            timerEl.textContent='⏳ '+(s.timeLeft??0)+' s';
+        }else if(s.state==='FINISHED'){
+            statusEl.textContent='Spiel beendet';
+            timerEl.textContent='';
+        }else{
+            statusEl.textContent='Wartet auf Start…';
+            timerEl.textContent='';
+        }
+
+        // Start-Button nur in Lobby
+        startBtn.disabled = !(s.state==='LOBBY' && count>=2);
+
+        // Board
+        if(s.state==='RUNNING' && Array.isArray(s.board)){
+            boardSection.style.display='block';
+            scoreSection.style.display='none';
+            const size=s.boardSize||4;
+            boardEl.style.gridTemplateColumns=`repeat(${size},1fr)`;
+            boardEl.innerHTML='';
+            s.board.forEach(card=>{
+                const div=document.createElement('div');
+                div.className='tile '+(card.state==='MATCHED'?'matched':card.state==='REVEALED'?'revealed':'hidden');
+                div.textContent = (card.state==='HIDDEN') ? '■' : (card.symbol || '⭐');
+                boardEl.appendChild(div);
+            });
+        } else if (s.state==='FINISHED') {
+            boardSection.style.display='block'; // optional: Board sichtbar lassen
+            // Scoreboard
+            scoreSection.style.display='block';
+            renderScores(s.players||[]);
+        } else {
+            boardSection.style.display='none';
+            scoreSection.style.display='none';
+        }
+    }
+
+    function renderScores(players){
+        scoreList.innerHTML='';
+        const sorted=[...players].sort((a,b)=>b.score-a.score);
+        const top = sorted.length? sorted[0].score : 0;
+        sorted.forEach(p=>{
+            const li=document.createElement('li');
+            const isWinner = p.score===top && top>0;
+            li.className = isWinner ? 'winner' : '';
+            li.textContent = (isWinner?'🏆 ':'') + p.name + ' — ' + p.score + ' Punkte';
+            scoreList.appendChild(li);
+        });
+    }
+
+    startBtn.addEventListener('click', async ()=>{
+        startBtn.disabled=true;
+        try{
+            const res=await fetch('/api/rooms/'+pin+'/start',{method:'POST'});
+            if(!res.ok){ const d=await res.json().catch(()=>({})); toast(d.error||'Start fehlgeschlagen'); startBtn.disabled=false; }
+            else toast('Spiel gestartet');
+        }catch(e){ toast('Start fehlgeschlagen'); startBtn.disabled=false; }
+    });
+
+    async function restart(resetScores){
+        restartKeepBtn.disabled = restartResetBtn.disabled = true;
+        try{
+            const res = await fetch('/api/rooms/'+pin+'/restart', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ resetScores })
+            });
+            if(!res.ok){
+                const d=await res.json().catch(()=>({})); toast(d.error||'Neustart fehlgeschlagen');
+                restartKeepBtn.disabled = restartResetBtn.disabled = false;
+            } else {
+                toast(resetScores?'Neue Runde (Scores 0)':'Neue Runde gestartet');
+            }
+        }catch(e){
+            toast('Neustart fehlgeschlagen');
+            restartKeepBtn.disabled = restartResetBtn.disabled = false;
+        }
+    }
+    restartKeepBtn.addEventListener('click', ()=> restart(false));
+    restartResetBtn.addEventListener('click', ()=> restart(true));
+
+    fetchOnce();
+    connectWs();
+</script>
+</body>
+</html>

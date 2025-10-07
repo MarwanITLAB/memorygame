@@ -1,0 +1,13 @@
+com\example\memorygame\model\Player.class
+com\example\memorygame\web\HomeController.class
+com\example\memorygame\ws\WebSocketConfig.class
+com\example\memorygame\model\Card.class
+com\example\memorygame\model\Card$CardState.class
+com\example\memorygame\web\RoomController.class
+com\example\memorygame\model\Room.class
+com\example\memorygame\MemorygameApplication.class
+com\example\memorygame\service\GameService.class
+com\example\memorygame\service\RoomService.class
+com\example\memorygame\ws\GameWsService.class
+com\example\memorygame\ws\TurnTimerService.class
+com\example\memorygame\model\Room$State.class
